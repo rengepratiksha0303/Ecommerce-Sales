@@ -8,62 +8,48 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.neighbors import KNeighborsRegressor
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 
+import tensorflow as tf
 from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import Dense, Dropout, Conv1D, MaxPooling1D
-from tensorflow.keras.layers import Flatten, SimpleRNN
+from tensorflow.keras.layers import (
+    Dense,
+    Dropout,
+    Conv1D,
+    MaxPooling1D,
+    Flatten,
+    SimpleRNN
+)
 from tensorflow.keras.callbacks import EarlyStopping
 
 
 # ============================================================
-# PAGE CONFIGURATION
+# STREAMLIT CONFIG
 # ============================================================
 
 st.set_page_config(
-    page_title="E-Commerce Revenue Prediction",
+    page_title="E-Commerce Sales Prediction",
     page_icon="🛒",
     layout="wide"
 )
 
-st.title("🛒 E-Commerce Revenue Prediction")
+st.title("🛒 E-Commerce Sales Prediction")
 st.write(
-    "Predict e-commerce revenue using KNN, ANN, CNN and RNN models."
+    "KNN + ANN + CNN + RNN Revenue Prediction"
 )
 
 
 # ============================================================
-# LOAD DATASET
+# CONSTANTS
 # ============================================================
 
-@st.cache_data
-def load_data():
+DATA_FILE = "ecommerce_sales_analytics_5000.csv"
 
-    file_path = "ecommerce_sales_analytics_5000.csv"
+CATEGORICAL_COLUMNS = [
+    "product_category",
+    "region",
+    "payment_method"
+]
 
-    df = pd.read_csv(file_path)
-
-    return df
-
-
-try:
-    df = load_data()
-
-except FileNotFoundError:
-    st.error(
-        "❌ ecommerce_sales_analytics_5000.csv was not found. "
-        "Please place the CSV file in the same folder as app.py."
-    )
-    st.stop()
-
-except Exception as e:
-    st.error(f"❌ Error while loading dataset: {e}")
-    st.stop()
-
-
-# ============================================================
-# CHECK REQUIRED COLUMNS
-# ============================================================
-
-required_columns = [
+REQUIRED_COLUMNS = [
     "order_id",
     "order_date",
     "customer_id",
@@ -78,15 +64,57 @@ required_columns = [
     "revenue"
 ]
 
+
+# ============================================================
+# LOAD DATA
+# ============================================================
+
+@st.cache_data
+def load_dataset():
+
+    df = pd.read_csv(DATA_FILE)
+
+    return df
+
+
+try:
+
+    df = load_dataset()
+
+except FileNotFoundError:
+
+    st.error(
+        f"❌ File '{DATA_FILE}' was not found."
+    )
+
+    st.info(
+        "Put the CSV file in the same GitHub repository as app.py."
+    )
+
+    st.stop()
+
+except Exception as e:
+
+    st.error(
+        f"❌ Error loading CSV: {e}"
+    )
+
+    st.stop()
+
+
+# ============================================================
+# CHECK COLUMNS
+# ============================================================
+
 missing_columns = [
-    column for column in required_columns
-    if column not in df.columns
+    col for col in REQUIRED_COLUMNS
+    if col not in df.columns
 ]
 
 if missing_columns:
 
     st.error(
-        "❌ Missing columns in dataset:\n"
+        "❌ Missing columns: "
         + ", ".join(missing_columns)
     )
 
@@ -94,110 +122,165 @@ if missing_columns:
 
 
 # ============================================================
-# DISPLAY DATASET
+# DATASET INFORMATION
 # ============================================================
 
-with st.expander("📊 View Dataset"):
+with st.expander("📊 Dataset Information"):
 
-    st.write("Dataset Shape:", df.shape)
+    col1, col2, col3 = st.columns(3)
+
+    with col1:
+        st.metric(
+            "Rows",
+            df.shape[0]
+        )
+
+    with col2:
+        st.metric(
+            "Columns",
+            df.shape[1]
+        )
+
+    with col3:
+        st.metric(
+            "Target",
+            "Revenue"
+        )
 
     st.dataframe(
-        df.head(20),
+        df.head(10),
         use_container_width=True
     )
 
 
 # ============================================================
-# PREPROCESSING
+# PREPROCESS DATA
 # ============================================================
 
 @st.cache_data
-def preprocess_data(data):
+def prepare_data(data):
 
     data = data.copy()
 
+    # --------------------------------------------------------
     # Convert date
+    # --------------------------------------------------------
+
     data["order_date"] = pd.to_datetime(
         data["order_date"],
         errors="coerce"
     )
 
+    # --------------------------------------------------------
     # Extract date features
+    # --------------------------------------------------------
+
     data["year"] = data["order_date"].dt.year
     data["month"] = data["order_date"].dt.month
     data["day"] = data["order_date"].dt.day
     data["day_of_week"] = data["order_date"].dt.dayofweek
 
-    # Remove unnecessary columns
-    data = data.drop(
+    # --------------------------------------------------------
+    # Remove ID/date columns
+    # --------------------------------------------------------
+
+    data.drop(
         columns=[
             "order_id",
             "customer_id",
             "order_date"
         ],
+        inplace=True,
         errors="ignore"
     )
 
-    # Convert categorical columns
-    categorical_columns = [
-        "product_category",
-        "region",
-        "payment_method"
-    ]
+    # --------------------------------------------------------
+    # Fill categorical missing values
+    # --------------------------------------------------------
 
-    for column in categorical_columns:
+    for col in CATEGORICAL_COLUMNS:
 
-        if column in data.columns:
+        if col in data.columns:
 
-            data[column] = data[column].fillna("Unknown")
+            data[col] = data[col].fillna(
+                "Unknown"
+            )
+
+    # --------------------------------------------------------
+    # One-hot encoding
+    # --------------------------------------------------------
 
     data = pd.get_dummies(
         data,
-        columns=categorical_columns,
-        drop_first=True
+        columns=CATEGORICAL_COLUMNS,
+        drop_first=False
     )
 
-    # Convert all columns to numeric
+    # --------------------------------------------------------
+    # Convert everything to numeric
+    # --------------------------------------------------------
+
     data = data.apply(
         pd.to_numeric,
         errors="coerce"
     )
 
-    # Remove missing values
-    data = data.replace(
+    # --------------------------------------------------------
+    # Replace infinity
+    # --------------------------------------------------------
+
+    data.replace(
         [np.inf, -np.inf],
-        np.nan
+        np.nan,
+        inplace=True
     )
 
-    data = data.fillna(
-        data.median(numeric_only=True)
+    # --------------------------------------------------------
+    # Fill numerical missing values
+    # --------------------------------------------------------
+
+    data.fillna(
+        data.median(numeric_only=True),
+        inplace=True
     )
 
-    # Target
+    # --------------------------------------------------------
+    # Final fallback
+    # --------------------------------------------------------
+
+    data.fillna(
+        0,
+        inplace=True
+    )
+
+    # --------------------------------------------------------
+    # Separate X and y
+    # --------------------------------------------------------
+
     X = data.drop(
         columns=["revenue"]
     )
 
-    y = data["revenue"]
+    y = data["revenue"].astype(float)
 
     return X, y
 
 
 try:
 
-    X, y = preprocess_data(df)
+    X, y = prepare_data(df)
 
 except Exception as e:
 
     st.error(
-        f"❌ Preprocessing error: {e}"
+        f"❌ Data preprocessing error: {e}"
     )
 
     st.stop()
 
 
 # ============================================================
-# TRAIN TEST SPLIT
+# TRAIN / TEST SPLIT
 # ============================================================
 
 X_train, X_test, y_train, y_test = train_test_split(
@@ -224,11 +307,14 @@ X_test_scaled = scaler.transform(
 
 
 # ============================================================
-# TRAIN KNN
+# KNN
 # ============================================================
 
 @st.cache_resource
-def train_knn(X_train, y_train):
+def create_knn(
+    X_train_data,
+    y_train_data
+):
 
     model = KNeighborsRegressor(
         n_neighbors=5,
@@ -236,42 +322,50 @@ def train_knn(X_train, y_train):
     )
 
     model.fit(
-        X_train,
-        y_train
+        X_train_data,
+        y_train_data
     )
 
     return model
 
 
 # ============================================================
-# TRAIN ANN
+# ANN
 # ============================================================
 
 @st.cache_resource
-def train_ann(X_train, y_train):
+def create_ann(
+    number_of_features,
+    X_train_data,
+    y_train_data
+):
 
     model = Sequential([
+
         Dense(
             128,
             activation="relu",
-            input_shape=(X_train.shape[1],)
+            input_shape=(number_of_features,)
         ),
 
-        Dropout(0.2),
+        Dropout(0.20),
 
         Dense(
             64,
             activation="relu"
         ),
 
-        Dropout(0.2),
+        Dropout(0.20),
 
         Dense(
             32,
             activation="relu"
         ),
 
-        Dense(1)
+        Dense(
+            1,
+            activation="linear"
+        )
     ])
 
     model.compile(
@@ -280,19 +374,19 @@ def train_ann(X_train, y_train):
         metrics=["mae"]
     )
 
-    early_stopping = EarlyStopping(
+    early_stop = EarlyStopping(
         monitor="val_loss",
-        patience=8,
+        patience=5,
         restore_best_weights=True
     )
 
     model.fit(
-        X_train,
-        y_train,
+        X_train_data,
+        y_train_data,
         validation_split=0.20,
-        epochs=50,
+        epochs=30,
         batch_size=32,
-        callbacks=[early_stopping],
+        callbacks=[early_stop],
         verbose=0
     )
 
@@ -300,28 +394,31 @@ def train_ann(X_train, y_train):
 
 
 # ============================================================
-# TRAIN CNN
+# CNN
 # ============================================================
 
 @st.cache_resource
-def train_cnn(X_train, y_train):
+def create_cnn(
+    number_of_features,
+    X_train_data,
+    y_train_data
+):
 
-    # CNN requires 3D input
-    X_train_cnn = X_train.reshape(
-        X_train.shape[0],
-        X_train.shape[1],
+    X_cnn = X_train_data.reshape(
+        X_train_data.shape[0],
+        X_train_data.shape[1],
         1
     )
 
     model = Sequential([
 
         Conv1D(
-            filters=64,
+            filters=32,
             kernel_size=3,
-            activation="relu",
             padding="same",
+            activation="relu",
             input_shape=(
-                X_train.shape[1],
+                number_of_features,
                 1
             )
         ),
@@ -331,10 +428,10 @@ def train_cnn(X_train, y_train):
         ),
 
         Conv1D(
-            filters=32,
+            filters=16,
             kernel_size=3,
-            activation="relu",
-            padding="same"
+            padding="same",
+            activation="relu"
         ),
 
         Flatten(),
@@ -344,14 +441,17 @@ def train_cnn(X_train, y_train):
             activation="relu"
         ),
 
-        Dropout(0.2),
+        Dropout(0.20),
 
         Dense(
             32,
             activation="relu"
         ),
 
-        Dense(1)
+        Dense(
+            1,
+            activation="linear"
+        )
     ])
 
     model.compile(
@@ -360,19 +460,19 @@ def train_cnn(X_train, y_train):
         metrics=["mae"]
     )
 
-    early_stopping = EarlyStopping(
+    early_stop = EarlyStopping(
         monitor="val_loss",
-        patience=8,
+        patience=5,
         restore_best_weights=True
     )
 
     model.fit(
-        X_train_cnn,
-        y_train,
+        X_cnn,
+        y_train_data,
         validation_split=0.20,
-        epochs=50,
+        epochs=30,
         batch_size=32,
-        callbacks=[early_stopping],
+        callbacks=[early_stop],
         verbose=0
     )
 
@@ -380,46 +480,50 @@ def train_cnn(X_train, y_train):
 
 
 # ============================================================
-# TRAIN RNN
+# RNN
 # ============================================================
 
 @st.cache_resource
-def train_rnn(X_train, y_train):
+def create_rnn(
+    number_of_features,
+    X_train_data,
+    y_train_data
+):
 
-    # RNN requires 3D input
-    X_train_rnn = X_train.reshape(
-        X_train.shape[0],
-        X_train.shape[1],
+    X_rnn = X_train_data.reshape(
+        X_train_data.shape[0],
+        X_train_data.shape[1],
         1
     )
 
     model = Sequential([
 
         SimpleRNN(
-            64,
+            32,
             activation="tanh",
             return_sequences=True,
             input_shape=(
-                X_train.shape[1],
+                number_of_features,
                 1
             )
         ),
 
-        Dropout(0.2),
+        Dropout(0.20),
 
         SimpleRNN(
-            32,
+            16,
             activation="tanh"
         ),
-
-        Dropout(0.2),
 
         Dense(
             32,
             activation="relu"
         ),
 
-        Dense(1)
+        Dense(
+            1,
+            activation="linear"
+        )
     ])
 
     model.compile(
@@ -428,19 +532,19 @@ def train_rnn(X_train, y_train):
         metrics=["mae"]
     )
 
-    early_stopping = EarlyStopping(
+    early_stop = EarlyStopping(
         monitor="val_loss",
-        patience=8,
+        patience=5,
         restore_best_weights=True
     )
 
     model.fit(
-        X_train_rnn,
-        y_train,
+        X_rnn,
+        y_train_data,
         validation_split=0.20,
-        epochs=50,
+        epochs=30,
         batch_size=32,
-        callbacks=[early_stopping],
+        callbacks=[early_stop],
         verbose=0
     )
 
@@ -448,121 +552,80 @@ def train_rnn(X_train, y_train):
 
 
 # ============================================================
-# TRAIN ALL MODELS
+# TRAIN MODELS
 # ============================================================
 
-st.sidebar.header("⚙️ Model Training")
+if "models_ready" not in st.session_state:
 
-train_button = st.sidebar.button(
-    "🚀 Train All Models"
-)
+    st.session_state.models_ready = False
 
 
-if "models_trained" not in st.session_state:
+if not st.session_state.models_ready:
 
-    st.session_state.models_trained = False
+    progress = st.progress(0)
 
+    status = st.empty()
 
-if train_button:
+    try:
 
-    with st.spinner(
-        "Training KNN, ANN, CNN and RNN models..."
-    ):
+        status.write("🔵 Training KNN...")
+        knn_model = create_knn(
+            X_train_scaled,
+            y_train
+        )
 
-        try:
+        progress.progress(25)
 
-            knn_model = train_knn(
-                X_train_scaled,
-                y_train
-            )
+        status.write("🟢 Training ANN...")
+        ann_model = create_ann(
+            X_train_scaled.shape[1],
+            X_train_scaled,
+            y_train
+        )
 
-            ann_model = train_ann(
-                X_train_scaled,
-                y_train
-            )
+        progress.progress(50)
 
-            cnn_model = train_cnn(
-                X_train_scaled,
-                y_train
-            )
+        status.write("🟠 Training CNN...")
+        cnn_model = create_cnn(
+            X_train_scaled.shape[1],
+            X_train_scaled,
+            y_train
+        )
 
-            rnn_model = train_rnn(
-                X_train_scaled,
-                y_train
-            )
+        progress.progress(75)
 
-            st.session_state.knn_model = knn_model
-            st.session_state.ann_model = ann_model
-            st.session_state.cnn_model = cnn_model
-            st.session_state.rnn_model = rnn_model
+        status.write("🟣 Training RNN...")
+        rnn_model = create_rnn(
+            X_train_scaled.shape[1],
+            X_train_scaled,
+            y_train
+        )
 
-            st.session_state.models_trained = True
+        progress.progress(100)
 
-            st.success(
-                "✅ All four models trained successfully!"
-            )
+        st.session_state.knn_model = knn_model
+        st.session_state.ann_model = ann_model
+        st.session_state.cnn_model = cnn_model
+        st.session_state.rnn_model = rnn_model
 
-        except Exception as e:
+        st.session_state.models_ready = True
 
-            st.error(
-                f"❌ Model training error: {e}"
-            )
+        status.success(
+            "✅ All models trained successfully!"
+        )
 
+    except Exception as e:
 
-# ============================================================
-# AUTOMATIC TRAINING
-# ============================================================
+        st.error(
+            f"❌ Model training failed: {e}"
+        )
 
-if not st.session_state.models_trained:
-
-    with st.spinner(
-        "Training models for the first time..."
-    ):
-
-        try:
-
-            knn_model = train_knn(
-                X_train_scaled,
-                y_train
-            )
-
-            ann_model = train_ann(
-                X_train_scaled,
-                y_train
-            )
-
-            cnn_model = train_cnn(
-                X_train_scaled,
-                y_train
-            )
-
-            rnn_model = train_rnn(
-                X_train_scaled,
-                y_train
-            )
-
-            st.session_state.knn_model = knn_model
-            st.session_state.ann_model = ann_model
-            st.session_state.cnn_model = cnn_model
-            st.session_state.rnn_model = rnn_model
-
-            st.session_state.models_trained = True
-
-        except Exception as e:
-
-            st.error(
-                f"❌ Model training error: {e}"
-            )
-
-            st.stop()
+        st.stop()
 
 
 # ============================================================
-# MODEL EVALUATION
+# LOAD MODELS FROM SESSION
 # ============================================================
-
-st.header("📈 Model Performance")
-
 
 knn_model = st.session_state.knn_model
 ann_model = st.session_state.ann_model
@@ -570,136 +633,108 @@ cnn_model = st.session_state.cnn_model
 rnn_model = st.session_state.rnn_model
 
 
-# KNN prediction
-knn_test_pred = knn_model.predict(
-    X_test_scaled
-)
+# ============================================================
+# MODEL EVALUATION
+# ============================================================
+
+@st.cache_data
+def evaluate_models(
+    X_test_data,
+    y_test_data
+):
+
+    # KNN
+    knn_pred = knn_model.predict(
+        X_test_data
+    )
+
+    # ANN
+    ann_pred = ann_model.predict(
+        X_test_data,
+        verbose=0
+    ).flatten()
+
+    # CNN
+    X_cnn_test = X_test_data.reshape(
+        X_test_data.shape[0],
+        X_test_data.shape[1],
+        1
+    )
+
+    cnn_pred = cnn_model.predict(
+        X_cnn_test,
+        verbose=0
+    ).flatten()
+
+    # RNN
+    X_rnn_test = X_test_data.reshape(
+        X_test_data.shape[0],
+        X_test_data.shape[1],
+        1
+    )
+
+    rnn_pred = rnn_model.predict(
+        X_rnn_test,
+        verbose=0
+    ).flatten()
+
+    predictions = {
+        "KNN": knn_pred,
+        "ANN": ann_pred,
+        "CNN": cnn_pred,
+        "RNN": rnn_pred
+    }
+
+    rows = []
+
+    for model_name, prediction in predictions.items():
+
+        mae = mean_absolute_error(
+            y_test_data,
+            prediction
+        )
+
+        mse = mean_squared_error(
+            y_test_data,
+            prediction
+        )
+
+        rmse = np.sqrt(mse)
+
+        r2 = r2_score(
+            y_test_data,
+            prediction
+        )
+
+        rows.append({
+            "Model": model_name,
+            "MAE": mae,
+            "MSE": mse,
+            "RMSE": rmse,
+            "R2 Score": r2
+        })
+
+    metrics_df = pd.DataFrame(rows)
+
+    return metrics_df
 
 
-# ANN prediction
-ann_test_pred = ann_model.predict(
+# ============================================================
+# PERFORMANCE
+# ============================================================
+
+st.header("📈 Model Performance")
+
+metrics_df = evaluate_models(
     X_test_scaled,
-    verbose=0
-).flatten()
-
-
-# CNN prediction
-X_test_cnn = X_test_scaled.reshape(
-    X_test_scaled.shape[0],
-    X_test_scaled.shape[1],
-    1
+    y_test
 )
-
-cnn_test_pred = cnn_model.predict(
-    X_test_cnn,
-    verbose=0
-).flatten()
-
-
-# RNN prediction
-X_test_rnn = X_test_scaled.reshape(
-    X_test_scaled.shape[0],
-    X_test_scaled.shape[1],
-    1
-)
-
-rnn_test_pred = rnn_model.predict(
-    X_test_rnn,
-    verbose=0
-).flatten()
-
-
-# ============================================================
-# PERFORMANCE FUNCTION
-# ============================================================
-
-def calculate_metrics(actual, predicted):
-
-    mae = mean_absolute_error(
-        actual,
-        predicted
-    )
-
-    mse = mean_squared_error(
-        actual,
-        predicted
-    )
-
-    rmse = np.sqrt(mse)
-
-    r2 = r2_score(
-        actual,
-        predicted
-    )
-
-    return mae, mse, rmse, r2
-
-
-knn_metrics = calculate_metrics(
-    y_test,
-    knn_test_pred
-)
-
-ann_metrics = calculate_metrics(
-    y_test,
-    ann_test_pred
-)
-
-cnn_metrics = calculate_metrics(
-    y_test,
-    cnn_test_pred
-)
-
-rnn_metrics = calculate_metrics(
-    y_test,
-    rnn_test_pred
-)
-
-
-performance_df = pd.DataFrame({
-
-    "Model": [
-        "KNN",
-        "ANN",
-        "CNN",
-        "RNN"
-    ],
-
-    "MAE": [
-        knn_metrics[0],
-        ann_metrics[0],
-        cnn_metrics[0],
-        rnn_metrics[0]
-    ],
-
-    "MSE": [
-        knn_metrics[1],
-        ann_metrics[1],
-        cnn_metrics[1],
-        rnn_metrics[1]
-    ],
-
-    "RMSE": [
-        knn_metrics[2],
-        ann_metrics[2],
-        cnn_metrics[2],
-        rnn_metrics[2]
-    ],
-
-    "R2 Score": [
-        knn_metrics[3],
-        ann_metrics[3],
-        cnn_metrics[3],
-        rnn_metrics[3]
-    ]
-})
-
 
 st.dataframe(
-    performance_df.style.format({
-        "MAE": "{:.2f}",
-        "MSE": "{:.2f}",
-        "RMSE": "{:.2f}",
+    metrics_df.style.format({
+        "MAE": "{:,.2f}",
+        "MSE": "{:,.2f}",
+        "RMSE": "{:,.2f}",
         "R2 Score": "{:.4f}"
     }),
     use_container_width=True
@@ -710,45 +745,59 @@ st.dataframe(
 # USER INPUT
 # ============================================================
 
-st.header("🔮 Revenue Prediction")
+st.header("🔮 Predict Revenue")
 
-
-st.subheader("Enter Customer Order Details")
+st.write(
+    "Enter the order details below."
+)
 
 
 col1, col2, col3 = st.columns(3)
 
 
+# ------------------------------------------------------------
+# COLUMN 1
+# ------------------------------------------------------------
+
 with col1:
+
+    product_categories = sorted(
+        df["product_category"]
+        .dropna()
+        .astype(str)
+        .unique()
+        .tolist()
+    )
+
+    regions = sorted(
+        df["region"]
+        .dropna()
+        .astype(str)
+        .unique()
+        .tolist()
+    )
 
     product_category = st.selectbox(
         "Product Category",
-        sorted(
-            df["product_category"]
-            .dropna()
-            .unique()
-            .tolist()
-        )
+        product_categories
     )
 
     region = st.selectbox(
         "Region",
-        sorted(
-            df["region"]
-            .dropna()
-            .unique()
-            .tolist()
-        )
+        regions
     )
 
     quantity = st.number_input(
         "Quantity",
         min_value=1,
-        max_value=1000,
         value=1,
         step=1
     )
 
+
+# ------------------------------------------------------------
+# COLUMN 2
+# ------------------------------------------------------------
 
 with col2:
 
@@ -762,28 +811,33 @@ with col2:
     discount = st.number_input(
         "Discount",
         min_value=0.0,
-        max_value=100.0,
         value=0.0,
-        step=0.5
+        step=0.1
+    )
+
+    payment_methods = sorted(
+        df["payment_method"]
+        .dropna()
+        .astype(str)
+        .unique()
+        .tolist()
     )
 
     payment_method = st.selectbox(
         "Payment Method",
-        sorted(
-            df["payment_method"]
-            .dropna()
-            .unique()
-            .tolist()
-        )
+        payment_methods
     )
 
+
+# ------------------------------------------------------------
+# COLUMN 3
+# ------------------------------------------------------------
 
 with col3:
 
     delivery_days = st.number_input(
         "Delivery Days",
         min_value=0,
-        max_value=100,
         value=3,
         step=1
     )
@@ -802,24 +856,22 @@ with col3:
 
 
 # ============================================================
-# PREDICTION BUTTON
+# PREDICTION
 # ============================================================
 
-predict_button = st.button(
+if st.button(
     "🔮 Predict Revenue",
     type="primary"
-)
-
-
-if predict_button:
+):
 
     try:
 
-        # ----------------------------------------
-        # Create input dataframe
-        # ----------------------------------------
+        # ----------------------------------------------------
+        # Create raw input
+        # ----------------------------------------------------
 
-        input_data = pd.DataFrame({
+        input_df = pd.DataFrame({
+
             "product_category": [
                 product_category
             ],
@@ -870,69 +922,69 @@ if predict_button:
         })
 
 
-        # ----------------------------------------
-        # One-hot encoding
-        # ----------------------------------------
+        # ----------------------------------------------------
+        # One-hot encode
+        # ----------------------------------------------------
 
-        input_data = pd.get_dummies(
-            input_data,
-            columns=[
-                "product_category",
-                "region",
-                "payment_method"
-            ],
-            drop_first=True
+        input_df = pd.get_dummies(
+            input_df,
+            columns=CATEGORICAL_COLUMNS,
+            drop_first=False
         )
 
 
-        # ----------------------------------------
-        # Match training columns
-        # ----------------------------------------
+        # ----------------------------------------------------
+        # Match exact training columns
+        # ----------------------------------------------------
 
-        input_data = input_data.reindex(
+        input_df = input_df.reindex(
             columns=X.columns,
             fill_value=0
         )
 
 
-        # ----------------------------------------
-        # Convert to numeric
-        # ----------------------------------------
+        # ----------------------------------------------------
+        # Convert to float
+        # ----------------------------------------------------
 
-        input_data = input_data.astype(float)
+        input_df = input_df.astype(float)
 
 
-        # ----------------------------------------
+        # ----------------------------------------------------
         # Scale
-        # ----------------------------------------
+        # ----------------------------------------------------
 
         input_scaled = scaler.transform(
-            input_data
+            input_df
         )
 
 
-        # ----------------------------------------
+        # ----------------------------------------------------
         # KNN prediction
-        # ----------------------------------------
+        # ----------------------------------------------------
 
-        knn_prediction = knn_model.predict(
-            input_scaled
-        )[0]
+        knn_prediction = float(
+            knn_model.predict(
+                input_scaled
+            )[0]
+        )
 
 
-        # ----------------------------------------
+        # ----------------------------------------------------
         # ANN prediction
-        # ----------------------------------------
+        # ----------------------------------------------------
 
-        ann_prediction = ann_model.predict(
-            input_scaled,
-            verbose=0
-        )[0][0]
+        ann_prediction = float(
+            ann_model.predict(
+                input_scaled,
+                verbose=0
+            )[0][0]
+        )
 
 
-        # ----------------------------------------
+        # ----------------------------------------------------
         # CNN prediction
-        # ----------------------------------------
+        # ----------------------------------------------------
 
         input_cnn = input_scaled.reshape(
             1,
@@ -940,15 +992,17 @@ if predict_button:
             1
         )
 
-        cnn_prediction = cnn_model.predict(
-            input_cnn,
-            verbose=0
-        )[0][0]
+        cnn_prediction = float(
+            cnn_model.predict(
+                input_cnn,
+                verbose=0
+            )[0][0]
+        )
 
 
-        # ----------------------------------------
+        # ----------------------------------------------------
         # RNN prediction
-        # ----------------------------------------
+        # ----------------------------------------------------
 
         input_rnn = input_scaled.reshape(
             1,
@@ -956,24 +1010,55 @@ if predict_button:
             1
         )
 
-        rnn_prediction = rnn_model.predict(
-            input_rnn,
-            verbose=0
-        )[0][0]
+        rnn_prediction = float(
+            rnn_model.predict(
+                input_rnn,
+                verbose=0
+            )[0][0]
+        )
 
 
-        # ----------------------------------------
-        # Display results
-        # ----------------------------------------
+        # ----------------------------------------------------
+        # Prevent negative revenue
+        # ----------------------------------------------------
+
+        knn_prediction = max(
+            0,
+            knn_prediction
+        )
+
+        ann_prediction = max(
+            0,
+            ann_prediction
+        )
+
+        cnn_prediction = max(
+            0,
+            cnn_prediction
+        )
+
+        rnn_prediction = max(
+            0,
+            rnn_prediction
+        )
+
+
+        # ====================================================
+        # DISPLAY RESULTS
+        # ====================================================
 
         st.success(
             "✅ Revenue prediction completed!"
         )
 
-        result_col1, result_col2, result_col3, result_col4 = st.columns(4)
+        st.subheader(
+            "💰 Predicted Revenue"
+        )
+
+        result1, result2, result3, result4 = st.columns(4)
 
 
-        with result_col1:
+        with result1:
 
             st.metric(
                 "🤖 KNN",
@@ -981,7 +1066,7 @@ if predict_button:
             )
 
 
-        with result_col2:
+        with result2:
 
             st.metric(
                 "🧠 ANN",
@@ -989,7 +1074,7 @@ if predict_button:
             )
 
 
-        with result_col3:
+        with result3:
 
             st.metric(
                 "🖼️ CNN",
@@ -997,7 +1082,7 @@ if predict_button:
             )
 
 
-        with result_col4:
+        with result4:
 
             st.metric(
                 "🔄 RNN",
@@ -1005,11 +1090,11 @@ if predict_button:
             )
 
 
-        # ----------------------------------------
-        # Comparison table
-        # ----------------------------------------
+        # ====================================================
+        # COMPARISON
+        # ====================================================
 
-        prediction_df = pd.DataFrame({
+        comparison_df = pd.DataFrame({
 
             "Model": [
                 "KNN",
@@ -1032,10 +1117,26 @@ if predict_button:
         )
 
         st.dataframe(
-            prediction_df.style.format({
+            comparison_df.style.format({
                 "Predicted Revenue": "{:,.2f}"
             }),
             use_container_width=True
+        )
+
+
+        # ----------------------------------------------------
+        # Best model
+        # ----------------------------------------------------
+
+        best_model_row = metrics_df.loc[
+            metrics_df["R2 Score"].idxmax()
+        ]
+
+        st.info(
+            f"🏆 Best performing model: "
+            f"**{best_model_row['Model']}** "
+            f"with R² Score = "
+            f"**{best_model_row['R2 Score']:.4f}**"
         )
 
 
@@ -1053,6 +1154,7 @@ if predict_button:
 st.markdown("---")
 
 st.caption(
-    "E-Commerce Revenue Prediction | KNN • ANN • CNN • RNN"
+    "E-Commerce Sales Analytics | "
+    "KNN • ANN • CNN • RNN"
 )
 ```
